@@ -1,0 +1,423 @@
+{
+  "contract": "uscrn-soil-moisture-pipeline",
+  "version": "1.0.0",
+  "observation": {
+    "primary_key": [
+      "station",
+      "time"
+    ],
+    "column_order": [
+      "time",
+      "station",
+      "annee",
+      "LATITUDE",
+      "LONGITUDE",
+      "T_HR_AVG",
+      "T_MAX",
+      "T_MIN",
+      "P_CALC",
+      "SOLARAD",
+      "SUR_TEMP",
+      "RH_HR_AVG",
+      "SOIL_MOISTURE_5",
+      "SOIL_MOISTURE_10",
+      "SOIL_MOISTURE_20",
+      "SOIL_MOISTURE_50",
+      "SOIL_MOISTURE_100",
+      "SOIL_TEMP_5",
+      "SOIL_TEMP_10",
+      "SOIL_TEMP_20",
+      "SOIL_TEMP_50",
+      "SOIL_TEMP_100",
+      "flag_incoherence_verticale"
+    ],
+    "columns": {
+      "time": {
+        "type": "timestamp",
+        "format": "%Y-%m-%d %H:%M:%S",
+        "timezone": "UTC",
+        "convention": "hour-ending",
+        "nullable": false
+      },
+      "station": {
+        "type": "string",
+        "enum_from": "station_registry",
+        "nullable": false
+      },
+      "annee": {
+        "type": "integer",
+        "nullable": false,
+        "derived": "year of interval start"
+      },
+      "LATITUDE": {
+        "type": "float",
+        "unit": "degrees",
+        "nullable": false,
+        "equals_registry": "latitude"
+      },
+      "LONGITUDE": {
+        "type": "float",
+        "unit": "degrees",
+        "nullable": false,
+        "equals_registry": "longitude"
+      },
+      "T_HR_AVG": {
+        "type": "float",
+        "unit": "degC",
+        "min": -60,
+        "max": 60,
+        "nullable": true,
+        "resolution": 0.1
+      },
+      "T_MAX": {
+        "type": "float",
+        "unit": "degC",
+        "min": -60,
+        "max": 60,
+        "nullable": true,
+        "resolution": 0.1
+      },
+      "T_MIN": {
+        "type": "float",
+        "unit": "degC",
+        "min": -60,
+        "max": 60,
+        "nullable": true,
+        "resolution": 0.1
+      },
+      "P_CALC": {
+        "type": "float",
+        "unit": "mm",
+        "min": 0,
+        "max": 200,
+        "nullable": true,
+        "resolution": 0.1
+      },
+      "SOLARAD": {
+        "type": "float",
+        "unit": "W/m2",
+        "min": 0,
+        "max": 1500,
+        "nullable": true,
+        "resolution": 1
+      },
+      "SUR_TEMP": {
+        "type": "float",
+        "unit": "degC",
+        "min": -60,
+        "max": 90,
+        "nullable": true,
+        "resolution": 0.1
+      },
+      "RH_HR_AVG": {
+        "type": "float",
+        "unit": "percent",
+        "min": 0,
+        "max": 100,
+        "nullable": true,
+        "resolution": 1
+      },
+      "SOIL_MOISTURE_5": {
+        "type": "float",
+        "unit": "m3/m3",
+        "min": 0,
+        "max": 0.65,
+        "nullable": true,
+        "resolution": 0.001,
+        "depth_cm": 5,
+        "protected_asset": true
+      },
+      "SOIL_MOISTURE_10": {
+        "type": "float",
+        "unit": "m3/m3",
+        "min": 0,
+        "max": 0.65,
+        "nullable": true,
+        "resolution": 0.001,
+        "depth_cm": 10
+      },
+      "SOIL_MOISTURE_20": {
+        "type": "float",
+        "unit": "m3/m3",
+        "min": 0,
+        "max": 0.65,
+        "nullable": true,
+        "resolution": 0.001,
+        "depth_cm": 20
+      },
+      "SOIL_MOISTURE_50": {
+        "type": "float",
+        "unit": "m3/m3",
+        "min": 0,
+        "max": 0.65,
+        "nullable": true,
+        "resolution": 0.001,
+        "depth_cm": 50
+      },
+      "SOIL_MOISTURE_100": {
+        "type": "float",
+        "unit": "m3/m3",
+        "min": 0,
+        "max": 0.65,
+        "nullable": true,
+        "resolution": 0.001,
+        "depth_cm": 100
+      },
+      "SOIL_TEMP_5": {
+        "type": "float",
+        "unit": "degC",
+        "min": -40,
+        "max": 70,
+        "nullable": true,
+        "resolution": 0.1,
+        "depth_cm": 5
+      },
+      "SOIL_TEMP_10": {
+        "type": "float",
+        "unit": "degC",
+        "min": -40,
+        "max": 70,
+        "nullable": true,
+        "resolution": 0.1,
+        "depth_cm": 10
+      },
+      "SOIL_TEMP_20": {
+        "type": "float",
+        "unit": "degC",
+        "min": -40,
+        "max": 70,
+        "nullable": true,
+        "resolution": 0.1,
+        "depth_cm": 20
+      },
+      "SOIL_TEMP_50": {
+        "type": "float",
+        "unit": "degC",
+        "min": -40,
+        "max": 70,
+        "nullable": true,
+        "resolution": 0.1,
+        "depth_cm": 50
+      },
+      "SOIL_TEMP_100": {
+        "type": "float",
+        "unit": "degC",
+        "min": -40,
+        "max": 70,
+        "nullable": true,
+        "resolution": 0.1,
+        "depth_cm": 100
+      },
+      "flag_incoherence_verticale": {
+        "type": "boolean",
+        "nullable": false
+      }
+    },
+    "rules": {
+      "temperature_order": {
+        "min": "T_MIN",
+        "avg": "T_HR_AVG",
+        "max": "T_MAX",
+        "tolerance": 0.1
+      },
+      "missing_value": "NaN or empty cell; -9999 forbidden",
+      "gap_filling": "none",
+      "absent_depths_must_be_null": true
+    }
+  },
+  "station_registry": [
+    {
+      "station": "AZ_Tucson_11_W",
+      "latitude": 32.24,
+      "longitude": -111.17,
+      "soil_depths_cm": [
+        5,
+        10
+      ],
+      "key_id": "AZ_Tucson_11_W-k1"
+    },
+    {
+      "station": "CA_Fallbrook_5_NE",
+      "latitude": 33.44,
+      "longitude": -117.19,
+      "soil_depths_cm": [
+        5,
+        10
+      ],
+      "key_id": "CA_Fallbrook_5_NE-k1"
+    },
+    {
+      "station": "MS_Newton_5_ENE",
+      "latitude": 32.34,
+      "longitude": -89.07,
+      "soil_depths_cm": [
+        5,
+        10,
+        20,
+        50,
+        100
+      ],
+      "key_id": "MS_Newton_5_ENE-k1"
+    },
+    {
+      "station": "NY_Ithaca_13_E",
+      "latitude": 42.44,
+      "longitude": -76.25,
+      "soil_depths_cm": [
+        5,
+        10,
+        20,
+        50,
+        100
+      ],
+      "key_id": "NY_Ithaca_13_E-k1"
+    },
+    {
+      "station": "OK_Goodwell_2_E",
+      "latitude": 36.6,
+      "longitude": -101.59,
+      "soil_depths_cm": [
+        5,
+        10,
+        20,
+        50,
+        100
+      ],
+      "key_id": "OK_Goodwell_2_E-k1"
+    },
+    {
+      "station": "OK_Goodwell_2_SE",
+      "latitude": 36.57,
+      "longitude": -101.61,
+      "soil_depths_cm": [
+        5,
+        10,
+        20,
+        50,
+        100
+      ],
+      "key_id": "OK_Goodwell_2_SE-k1"
+    }
+  ],
+  "packet": {
+    "format": "jsonl",
+    "fields": {
+      "v": "string",
+      "key_id": "string",
+      "station": "string",
+      "seq": "integer>=0",
+      "ts": "iso8601-utc-Z",
+      "sent_at": "iso8601-utc-Z",
+      "nonce": "hex32",
+      "payload": "object",
+      "payload_sha256": "hex64",
+      "sig": "hex128"
+    },
+    "payload_excludes": [
+      "time",
+      "station",
+      "annee",
+      "LATITUDE",
+      "LONGITUDE",
+      "flag_incoherence_verticale"
+    ],
+    "canonical_json": {
+      "sort_keys": true,
+      "separators": [
+        ",",
+        ":"
+      ],
+      "encoding": "utf-8",
+      "nan": "null"
+    },
+    "signed_header_fields": [
+      "v",
+      "key_id",
+      "station",
+      "seq",
+      "ts",
+      "sent_at",
+      "nonce",
+      "payload_sha256"
+    ],
+    "signature": "Ed25519",
+    "max_staleness_hours": 2,
+    "gate_codes": [
+      "E_SCHEMA",
+      "E_UNKNOWN_KEY",
+      "E_PAYLOAD_HASH",
+      "E_BAD_SIG",
+      "E_REPLAY_SEQ",
+      "E_REPLAY_NONCE",
+      "E_STALE",
+      "OK"
+    ],
+    "warning_codes": [
+      "W_SEQ_GAP"
+    ]
+  },
+  "attacked": {
+    "label_columns": {
+      "is_attacked": "boolean",
+      "attack_type": "string",
+      "attack_run_id": "string"
+    },
+    "attack_codes": [
+      "replay",
+      "tamper",
+      "bias",
+      "drift",
+      "mimicry",
+      "heldout"
+    ],
+    "events_columns": [
+      "attack_run_id",
+      "station",
+      "attack_type",
+      "target_columns",
+      "start",
+      "end",
+      "params_json",
+      "seed",
+      "engine_version"
+    ]
+  },
+  "detector_output": {
+    "columns": {
+      "station": "string",
+      "time": "timestamp",
+      "gate_status": "gate_code",
+      "trust_score": "float[0,1]|null",
+      "decision": [
+        "accept",
+        "flag",
+        "reject"
+      ],
+      "latency_ms": "float>=0",
+      "detector_version": "string"
+    }
+  },
+  "context": {
+    "prefix": "CTX_",
+    "join_on": [
+      "station",
+      "time"
+    ],
+    "status": "reserved, not in v1.0.0"
+  },
+  "split": {
+    "train": [
+      "2022-01-01",
+      "2023-12-31"
+    ],
+    "validation": [
+      "2024-01-01",
+      "2024-12-31"
+    ],
+    "test": [
+      "2025-01-01",
+      "2026-01-01"
+    ],
+    "status": "proposed"
+  }
+}
