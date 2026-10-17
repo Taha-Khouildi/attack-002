@@ -1,0 +1,68 @@
+{
+  "scenario": "Tamper",
+  "mode": "payload_only",
+  "source_file": "data/packets/replay_test_valid.jsonl",
+  "configuration": {
+    "attack_type": "tamper",
+    "mode": "payload_only",
+    "station": "AZ_Tucson_11_W",
+    "seed": 20261017,
+    "count": 1,
+    "payload_offset": 0.001
+  },
+  "attacked_delivery_index": 2,
+  "selected_packet_change": {
+    "changed_field": "payload.SOIL_MOISTURE_5",
+    "index": 2,
+    "modified_sent_at": "2026-10-17T20:07:55Z",
+    "modified_ts": "2026-10-17T19:57:57Z",
+    "modified_value": 0.136,
+    "original_sent_at": "2026-10-17T20:07:55Z",
+    "original_ts": "2026-10-17T19:57:57Z",
+    "original_value": 0.135,
+    "payload_offset": 0.001,
+    "seq": 2
+  },
+  "expected_stage1_result_prediction": "E_PAYLOAD_HASH",
+  "stage1_result_verified": false,
+  "labels": [
+    {
+      "delivery_index": 0,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    },
+    {
+      "delivery_index": 1,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    },
+    {
+      "delivery_index": 2,
+      "is_attacked": true,
+      "attack_type": "tamper",
+      "attack_run_id": "tamper-AZ_Tucson_11_W-ce035cca7e9d52248b2f2d9d"
+    },
+    {
+      "delivery_index": 3,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    },
+    {
+      "delivery_index": 4,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    }
+  ],
+  "all_unattacked_packets_unchanged": true,
+  "packet_immediately_after_attacked_packet_unchanged": true,
+  "actual_validator": {
+    "command": "python -B validate.py packets <file> --pubkeys <pubkeys.json>",
+    "returncode": 1,
+    "stdout": "FAIL  line 3: payload_sha256 does not match payload\ndata\\attacked\\packets\\tamper_payload_only.jsonl: INVALID (1 problems) against contract v1.0.0",
+    "stderr": ""
+  }
+}

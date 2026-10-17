@@ -1,0 +1,143 @@
+{
+  "scenario": "Replay",
+  "source_file": "data/packets/replay_test_valid.jsonl",
+  "configuration": {
+    "attack_type": "replay",
+    "station": "AZ_Tucson_11_W",
+    "seed": 20261017,
+    "window_len": 1,
+    "delay_packets": 2
+  },
+  "selected_original_index": 1,
+  "insertion_index": 4,
+  "packet_order": [
+    {
+      "delivery_index": 0,
+      "seq": 0,
+      "ts": "2026-10-17T19:57:55Z",
+      "is_replay_copy": false
+    },
+    {
+      "delivery_index": 1,
+      "seq": 1,
+      "ts": "2026-10-17T19:57:56Z",
+      "is_replay_copy": false
+    },
+    {
+      "delivery_index": 2,
+      "seq": 2,
+      "ts": "2026-10-17T19:57:57Z",
+      "is_replay_copy": false
+    },
+    {
+      "delivery_index": 3,
+      "seq": 3,
+      "ts": "2026-10-17T19:57:58Z",
+      "is_replay_copy": false
+    },
+    {
+      "delivery_index": 4,
+      "seq": 1,
+      "ts": "2026-10-17T19:57:56Z",
+      "is_replay_copy": true
+    },
+    {
+      "delivery_index": 5,
+      "seq": 4,
+      "ts": "2026-10-17T19:57:59Z",
+      "is_replay_copy": false
+    }
+  ],
+  "replayed_packet_matches_original_dictionary": true,
+  "preserved_fields_checked": [
+    "sig",
+    "payload_sha256",
+    "nonce",
+    "seq",
+    "ts",
+    "sent_at",
+    "payload"
+  ],
+  "labels": [
+    {
+      "delivery_index": 0,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    },
+    {
+      "delivery_index": 1,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    },
+    {
+      "delivery_index": 2,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    },
+    {
+      "delivery_index": 3,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    },
+    {
+      "delivery_index": 4,
+      "is_attacked": true,
+      "attack_type": "replay",
+      "attack_run_id": "replay-AZ_Tucson_11_W-04fc6ef0d4bea5931aceaaa9"
+    },
+    {
+      "delivery_index": 5,
+      "is_attacked": false,
+      "attack_type": "",
+      "attack_run_id": ""
+    }
+  ],
+  "expected_stage1_results": [
+    {
+      "delivery_index": 0,
+      "result": "OK"
+    },
+    {
+      "delivery_index": 1,
+      "result": "OK"
+    },
+    {
+      "delivery_index": 2,
+      "result": "OK"
+    },
+    {
+      "delivery_index": 3,
+      "result": "OK"
+    },
+    {
+      "delivery_index": 4,
+      "result": "E_REPLAY_SEQ"
+    },
+    {
+      "delivery_index": 5,
+      "result": "OK (UNCONFIRMED; conditional on preserving accepted state when delivery 4 is rejected)"
+    }
+  ],
+  "stage1_results_verified": false,
+  "untouched_input_validator": {
+    "command": "python -B validate.py packets <file> --pubkeys <pubkeys.json>",
+    "returncode": 0,
+    "stdout": "data\\packets\\replay_test_valid.jsonl: VALID against contract v1.0.0",
+    "stderr": ""
+  },
+  "attacked_output_validator": {
+    "command": "python -B validate.py packets <file> --pubkeys <pubkeys.json>",
+    "returncode": 1,
+    "stdout": "WARN  line 5: seq 1 after 3 for AZ_Tucson_11_W\n  WARN  line 6: seq 4 after 1 for AZ_Tucson_11_W\n  FAIL  line 5: nonce reused for AZ_Tucson_11_W-k1\ndata\\attacked\\packets\\replay_test_attacked.jsonl: INVALID (1 problems) against contract v1.0.0",
+    "stderr": ""
+  },
+  "validator_expectations": [
+    "sequence warning: seq 1 after seq 3",
+    "sequence warning: seq 4 after seq 1",
+    "nonce reuse error for replayed packet"
+  ]
+}
