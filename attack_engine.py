@@ -1,7 +1,8 @@
-"""Small, deterministic Bias attacks on the protected 5 cm soil-moisture reading.
+"""Small, deterministic attacks for the TSYP14 sensor-data project.
 
-Labels are returned separately so callers can keep them out of signing and
-detector inputs. Supported Bias modes are constant offsets and isolated spikes.
+Bias modes alter the protected 5 cm soil-moisture reading before signing; Replay
+duplicates signed packet dictionaries after signing. Labels are returned
+separately so callers can keep ground truth out of packets and detector inputs.
 """
 
 from __future__ import annotations
@@ -10,8 +11,12 @@ import json
 import hashlib
 import math
 import random
+import re
+from copy import deepcopy
 from bisect import bisect_left
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+from pathlib import Path
 
 import pandas as pd
 
@@ -35,6 +40,503 @@ LOWER_BOUND = Decimal("0")
 UPPER_BOUND = Decimal("0.65")
 SUPPORTED_YEARS = {2024, 2025}
 _ONE_HOUR = pd.Timedelta(hours=1)
+PACKET_FIELDS = {
+    "v",
+    "key_id",
+    "station",
+    "seq",
+    "ts",
+    "sent_at",
+    "nonce",
+    "payload",
+    "payload_sha256",
+    "sig",
+}
+PACKET_PAYLOAD_COLUMNS = {
+    "T_HR_AVG",
+    "T_MAX",
+    "T_MIN",
+    "P_CALC",
+    "SOLARAD",
+    "SUR_TEMP",
+    "RH_HR_AVG",
+    "SOIL_MOISTURE_5",
+    "SOIL_MOISTURE_10",
+    "SOIL_MOISTURE_20",
+    "SOIL_MOISTURE_50",
+    "SOIL_MOISTURE_100",
+    "SOIL_TEMP_5",
+    "SOIL_TEMP_10",
+    "SOIL_TEMP_20",
+    "SOIL_TEMP_50",
+    "SOIL_TEMP_100",
+}
+_ISO_UTC_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _canonical_packet_bytes(value):
+    """Return contract-style canonical JSON bytes for packets and metadata."""
+    def clean(item):
+        if isinstance(item, float) and math.isnan(item):
+            return None
+        if isinstance(item, dict):
+            if any(not isinstance(key, str) for key in item):
+                raise ValueError("canonical JSON object keys must be strings")
+            return {key: clean(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [clean(child) for child in item]
+        return item
+
+    try:
+        return json.dumps(
+            clean(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("packets and params must be canonical JSON values") from exc
+
+
+def _validate_signed_packet(packet, position):
+    if not isinstance(packet, dict) or set(packet) != PACKET_FIELDS:
+        raise ValueError(
+            f"packet at position {position} must have exactly the contracted packet fields"
+        )
+    for field in ("v", "key_id", "station", "ts", "sent_at", "nonce", "payload_sha256", "sig"):
+        if not isinstance(packet[field], str):
+            raise ValueError(f"packet at position {position}: {field} must be a string")
+    if not packet["station"]:
+        raise ValueError(f"packet at position {position}: station must not be empty")
+    seq = packet["seq"]
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        raise ValueError(f"packet at position {position}: seq must be a non-negative integer")
+    for field in ("ts", "sent_at"):
+        value = packet[field]
+        if not _ISO_UTC_Z.fullmatch(value):
+            raise ValueError(f"packet at position {position}: {field} must be ISO 8601 UTC with Z")
+        try:
+            datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError as exc:
+            raise ValueError(f"packet at position {position}: {field} is not a valid timestamp") from exc
+    if not re.fullmatch(r"[0-9a-f]{32}", packet["nonce"]):
+        raise ValueError(f"packet at position {position}: nonce must be 32 lowercase hex characters")
+    if not re.fullmatch(r"[0-9a-f]{64}", packet["payload_sha256"]):
+        raise ValueError(f"packet at position {position}: payload_sha256 must be 64 lowercase hex characters")
+    if not re.fullmatch(r"[0-9a-f]{128}", packet["sig"]):
+        raise ValueError(f"packet at position {position}: sig must be 128 lowercase hex characters")
+    payload = packet["payload"]
+    if not isinstance(payload, dict) or set(payload) != PACKET_PAYLOAD_COLUMNS:
+        raise ValueError(
+            f"packet at position {position}: payload must contain exactly the contract measurement fields"
+        )
+    _canonical_packet_bytes(packet)
+    return pd.Timestamp(packet["ts"])
+
+
+def _registered_station_keys():
+    """Read station/key bindings from the repository's unchanged contract schema."""
+    schema_path = Path(__file__).with_name("data_contract.schema.json")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    return {item["station"]: item["key_id"] for item in schema["station_registry"]}
+
+
+def _tamper_packet(signed_packets, params):
+    mode = params.get("mode")
+    supported_modes = {
+        "payload_only",
+        "recompute_hash_keep_signature",
+        "signed_header_change",
+        "signature_flip",
+        "station_swap",
+        "drop_field",
+    }
+    if mode not in supported_modes:
+        raise ValueError(f"unsupported Tamper mode: {mode!r}")
+
+    seed = params.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("seed must be an integer")
+    count = params.get("count", 1)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("count must be a positive integer")
+    station = params.get("station")
+    if not isinstance(station, str) or not station:
+        raise ValueError("station must be a non-empty string for Tamper")
+
+    timestamps = [
+        _validate_signed_packet(packet, position)
+        for position, packet in enumerate(signed_packets)
+    ]
+    station_keys = _registered_station_keys()
+    if station not in station_keys:
+        raise ValueError(f"station {station!r} is not registered in the contract")
+    station_positions = [
+        position
+        for position, packet in enumerate(signed_packets)
+        if packet["station"] == station
+    ]
+    if not station_positions:
+        raise ValueError(f"station {station!r} is not present in signed_packets")
+
+    rng = random.Random(seed)
+    payload_offset = None
+    header_field = None
+    dropped_field = None
+    target_station = None
+
+    if mode in {"payload_only", "recompute_hash_keep_signature"}:
+        try:
+            payload_offset = Decimal(str(params["payload_offset"]))
+        except (KeyError, ArithmeticError, ValueError) as exc:
+            raise ValueError("payload_offset is required and must be a finite number") from exc
+        if not payload_offset.is_finite() or payload_offset == 0:
+            raise ValueError("payload_offset must be finite and non-zero")
+        offset_ticks = payload_offset / RESOLUTION
+        if offset_ticks != offset_ticks.to_integral_value():
+            raise ValueError("payload_offset must be a multiple of the 0.001 resolution")
+
+    if mode == "signed_header_change":
+        header_field = params.get("header_field", "seq")
+        if header_field not in {"seq", "ts", "sent_at", "nonce"}:
+            raise ValueError("header_field must be one of seq, ts, sent_at, or nonce")
+    if mode == "drop_field":
+        dropped_field = params.get("drop_field")
+        if dropped_field is not None and dropped_field not in PACKET_FIELDS:
+            raise ValueError("drop_field must name a required top-level packet field")
+
+    if mode == "station_swap":
+        original_key_ids = {signed_packets[pos]["key_id"] for pos in station_positions}
+        replacement_stations = [
+            candidate
+            for candidate, candidate_key in station_keys.items()
+            if candidate != station and candidate_key not in original_key_ids
+        ]
+        if not replacement_stations:
+            raise ValueError(
+                "no different registered station has a key_id binding distinct from the original packet"
+            )
+        target_station = rng.choice(sorted(replacement_stations))
+
+    eligible_positions = []
+    for position in station_positions:
+        packet = signed_packets[position]
+        if mode in {"payload_only", "recompute_hash_keep_signature"}:
+            raw_value = packet["payload"].get(TARGET_COLUMN)
+            if isinstance(raw_value, bool) or raw_value is None:
+                continue
+            try:
+                original = Decimal(str(raw_value))
+            except Exception:
+                continue
+            if not original.is_finite():
+                continue
+            if original < LOWER_BOUND or original > UPPER_BOUND:
+                continue
+            if (original / RESOLUTION) != (original / RESOLUTION).to_integral_value():
+                continue
+            modified = (original + payload_offset).quantize(
+                RESOLUTION, rounding=ROUND_HALF_UP
+            )
+            if LOWER_BOUND <= modified <= UPPER_BOUND and modified != original:
+                eligible_positions.append(position)
+        else:
+            eligible_positions.append(position)
+
+    if len(eligible_positions) < count:
+        raise ValueError(
+            f"requested count={count}, but only {len(eligible_positions)} eligible packet(s) exist for station {station!r}"
+        )
+    selected_positions = sorted(rng.sample(eligible_positions, count))
+    if mode == "drop_field" and dropped_field is None:
+        dropped_field = rng.choice(sorted(PACKET_FIELDS))
+
+    attacked_packets = deepcopy(list(signed_packets))
+    changes = []
+    for position in selected_positions:
+        original_packet = signed_packets[position]
+        attacked_packet = attacked_packets[position]
+        record = {
+            "index": position,
+            "seq": original_packet["seq"],
+            "original_ts": original_packet["ts"],
+            "modified_ts": original_packet["ts"],
+            "original_sent_at": original_packet["sent_at"],
+            "modified_sent_at": original_packet["sent_at"],
+        }
+
+        if mode in {"payload_only", "recompute_hash_keep_signature"}:
+            original_value = Decimal(str(original_packet["payload"][TARGET_COLUMN]))
+            modified_value = (original_value + payload_offset).quantize(
+                RESOLUTION, rounding=ROUND_HALF_UP
+            )
+            attacked_packet["payload"][TARGET_COLUMN] = float(modified_value)
+            if mode == "recompute_hash_keep_signature":
+                attacked_packet["payload_sha256"] = hashlib.sha256(
+                    _canonical_packet_bytes(attacked_packet["payload"])
+                ).hexdigest()
+            record.update(
+                {
+                    "changed_field": f"payload.{TARGET_COLUMN}",
+                    "original_value": float(original_value),
+                    "modified_value": float(modified_value),
+                    "payload_offset": float(payload_offset),
+                }
+            )
+        elif mode == "signed_header_change":
+            original_value = original_packet[header_field]
+            if header_field == "seq":
+                modified_value = original_value + 1
+            elif header_field in {"ts", "sent_at"}:
+                modified_value = (
+                    datetime.strptime(original_value, "%Y-%m-%dT%H:%M:%SZ")
+                    + timedelta(seconds=1)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:  # nonce: flip a hex nibble while preserving the contracted format.
+                first = "1" if original_value[0] != "1" else "0"
+                modified_value = first + original_value[1:]
+            attacked_packet[header_field] = modified_value
+            if header_field == "ts":
+                record["modified_ts"] = modified_value
+            if header_field == "sent_at":
+                record["modified_sent_at"] = modified_value
+            record.update(
+                {
+                    "changed_field": header_field,
+                    "original_value": original_value,
+                    "modified_value": modified_value,
+                }
+            )
+        elif mode == "signature_flip":
+            signature = bytearray.fromhex(original_packet["sig"])
+            byte_index = rng.randrange(len(signature))
+            bit_index = rng.randrange(8)
+            signature[byte_index] ^= 1 << bit_index
+            modified_value = signature.hex()
+            attacked_packet["sig"] = modified_value
+            record.update(
+                {
+                    "changed_field": "sig",
+                    "original_value": original_packet["sig"],
+                    "modified_value": modified_value,
+                    "flipped_byte_index": byte_index,
+                    "flipped_bit_index": bit_index,
+                }
+            )
+        elif mode == "station_swap":
+            modified_value = target_station
+            attacked_packet["station"] = modified_value
+            record.update(
+                {
+                    "changed_field": "station",
+                    "original_value": original_packet["station"],
+                    "modified_value": modified_value,
+                    "key_id_unchanged": original_packet["key_id"],
+                }
+            )
+        else:  # drop_field
+            original_value = attacked_packet.pop(dropped_field)
+            record.update(
+                {
+                    "changed_field": dropped_field,
+                    "original_value": original_value,
+                    "modified_value": None,
+                    "field_removed": True,
+                }
+            )
+        changes.append(record)
+
+    event_params = {
+        "attack_type": "tamper",
+        "mode": mode,
+        "delivery": "replace",
+        "configuration": params,
+        "seed": seed,
+        "count": count,
+        "selected_packets": changes,
+        "target_station": target_station,
+    }
+    run_hash = hashlib.sha256(_canonical_packet_bytes(event_params)).hexdigest()[:24]
+    run_id = f"tamper-{station}-{run_hash}"
+
+    attacked_flags = [False] * len(signed_packets)
+    attack_types = [""] * len(signed_packets)
+    run_ids = [""] * len(signed_packets)
+    for position in selected_positions:
+        attacked_flags[position] = True
+        attack_types[position] = "tamper"
+        run_ids[position] = run_id
+    labels = pd.DataFrame(
+        {
+            "is_attacked": attacked_flags,
+            "attack_type": attack_types,
+            "attack_run_id": run_ids,
+        },
+        index=range(len(signed_packets)),
+        columns=LABEL_COLUMNS,
+    )
+
+    first_time = min(timestamps[position] for position in selected_positions)
+    last_time = max(timestamps[position] for position in selected_positions)
+    event = {
+        "attack_run_id": run_id,
+        "station": station,
+        "attack_type": "tamper",
+        # Working convention: events target the protected observation field;
+        # params_json records the exact packet field changed in each packet.
+        "target_columns": TARGET_COLUMN,
+        "start": first_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "end": last_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "params_json": _canonical_packet_bytes(event_params).decode("utf-8"),
+        "seed": seed,
+        "engine_version": ENGINE_VERSION,
+    }
+    return attacked_packets, labels, event
+
+
+def attack_packet(signed_packets, params):
+    """Replay a contiguous window of signed packet dictionaries without editing it.
+
+    ``signed_packets`` is an ordered list/tuple of exact contract packet objects.
+    ``params`` requires ``attack_type='replay'``, an integer ``seed``, positive
+    ``window_len``, and non-negative ``delay_packets``; an optional ``station``
+    restricts selection. A window is eligible only when it belongs to one
+    station and every adjacent observation timestamp is exactly one hour apart.
+    Its copies are inserted after the requested number of subsequent original
+    deliveries. Copies retain every field name and value. Labels are returned
+    separately, with a zero-based index for output delivery positions.
+
+    The event's ``target_columns`` lists every measurement in the replayed
+    payload as a working convention: Replay duplicates the complete payload,
+    even though ``SOIL_MOISTURE_5`` is the project's particularly protected
+    measurement. No raw byte identity is implied for dictionary inputs.
+    """
+    if not isinstance(signed_packets, (list, tuple)) or not signed_packets:
+        raise ValueError("signed_packets must be a non-empty ordered list or tuple")
+    if not isinstance(params, dict):
+        raise TypeError("params must be a dictionary")
+    if params.get("attack_type") == "tamper":
+        return _tamper_packet(signed_packets, params)
+    if params.get("attack_type") != "replay":
+        raise ValueError("supported packet attack_type values are 'replay' and 'tamper'")
+
+    seed = params.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("seed must be an integer")
+    window_len = params.get("window_len")
+    if isinstance(window_len, bool) or not isinstance(window_len, int) or window_len < 1:
+        raise ValueError("window_len must be a positive integer")
+    delay_packets = params.get("delay_packets")
+    if isinstance(delay_packets, bool) or not isinstance(delay_packets, int) or delay_packets < 0:
+        raise ValueError("delay_packets must be a non-negative integer")
+    requested_station = params.get("station")
+    if requested_station is not None and (not isinstance(requested_station, str) or not requested_station):
+        raise ValueError("station, when provided, must be a non-empty string")
+
+    timestamps = [
+        _validate_signed_packet(packet, position)
+        for position, packet in enumerate(signed_packets)
+    ]
+    possible_starts = []
+    for start in range(len(signed_packets) - window_len + 1):
+        end = start + window_len - 1
+        window = signed_packets[start : end + 1]
+        if requested_station is not None and window[0]["station"] != requested_station:
+            continue
+        if any(packet["station"] != window[0]["station"] for packet in window[1:]):
+            continue
+        if any(
+            timestamps[index + 1] - timestamps[index] != _ONE_HOUR
+            for index in range(start, end)
+        ):
+            continue
+        possible_starts.append(start)
+    if not possible_starts:
+        raise ValueError(
+            "no one-hour-spaced contiguous packet window matches window_len and station"
+        )
+
+    eligible_starts = [
+        start
+        for start in possible_starts
+        if start + window_len - 1 + delay_packets < len(signed_packets)
+    ]
+    if not eligible_starts:
+        raise ValueError(
+            "packet stream is too short for delay_packets after every eligible window"
+        )
+
+    rng = random.Random(seed)
+    window_start = rng.choice(eligible_starts)
+    window_end = window_start + window_len - 1
+    insertion_index = window_end + delay_packets + 1
+    replayed_packets = deepcopy(list(signed_packets[window_start : window_end + 1]))
+
+    fingerprint = hashlib.sha256(_canonical_packet_bytes(replayed_packets)).hexdigest()
+    identity = {
+        "configuration": params,
+        "selected_window_start_index": window_start,
+        "selected_window_end_index": window_end,
+        "selected_packets": replayed_packets,
+    }
+    run_hash = hashlib.sha256(_canonical_packet_bytes(identity)).hexdigest()[:24]
+    station = signed_packets[window_start]["station"]
+    run_id = f"replay-{station}-{run_hash}"
+
+    original_copies = deepcopy(list(signed_packets))
+    attacked_packets = (
+        original_copies[:insertion_index]
+        + replayed_packets
+        + original_copies[insertion_index:]
+    )
+    attacked_flags = [False] * len(attacked_packets)
+    attack_types = [""] * len(attacked_packets)
+    run_ids = [""] * len(attacked_packets)
+    for delivery_index in range(insertion_index, insertion_index + window_len):
+        attacked_flags[delivery_index] = True
+        attack_types[delivery_index] = "replay"
+        run_ids[delivery_index] = run_id
+    labels = pd.DataFrame(
+        {
+            "is_attacked": attacked_flags,
+            "attack_type": attack_types,
+            "attack_run_id": run_ids,
+        },
+        index=range(len(attacked_packets)),
+        columns=LABEL_COLUMNS,
+    )
+
+    selected_packets = signed_packets[window_start : window_end + 1]
+    # Working convention: Replay repeats the packet, but the event schema only
+    # accepts observation columns. SOIL_MOISTURE_5 is the evaluation target.
+    target_columns = TARGET_COLUMN
+    event_params = {
+        "attack_type": "replay",
+        "mode": "replay",
+        "configuration": params,
+        "seed": seed,
+        "window_len": window_len,
+        "delay_packets": delay_packets,
+        "selected_window_start_index": window_start,
+        "selected_window_end_index": window_end,
+        "selected_window_ts": [packet["ts"] for packet in selected_packets],
+        "selected_window_seq": [packet["seq"] for packet in selected_packets],
+        "insertion_index": insertion_index,
+        "replayed_packets_sha256": fingerprint,
+    }
+    event = {
+        "attack_run_id": run_id,
+        "station": station,
+        "attack_type": "replay",
+        "target_columns": target_columns,
+        "start": selected_packets[0]["ts"],
+        "end": selected_packets[-1]["ts"],
+        "params_json": _canonical_packet_bytes(event_params).decode("utf-8"),
+        "seed": seed,
+        "engine_version": ENGINE_VERSION,
+    }
+    return attacked_packets, labels, event
 
 
 def _integer_range(value, name):
