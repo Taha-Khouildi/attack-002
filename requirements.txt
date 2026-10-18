@@ -1,0 +1,21 @@
+# TSYP14 Track 2 — False-Data Injection Attack Toolkit
+# Starter dependency list based on available project files and described workflows.
+# Verify direct imports in attack_engine.py, make_attacks.py, and plotting scripts
+# before treating this as a complete or reproducibly pinned environment.
+
+# Tabular sensor data and CSV/Parquet validation
+pandas
+pyarrow
+
+# Ed25519 signature verification for signed sensor packets
+# Version reported as installed in the project's virtual environment.
+cryptography==50.0.2
+
+# Attack-data numerical operations and example plots
+# Confirm these are direct imports in the current branch.
+numpy
+matplotlib
+
+# Add PyYAML if the shared attack configuration actually uses YAML.
+# Do not enable it solely based on a proposed configuration format.
+# PyYAML
