@@ -441,8 +441,14 @@ class TestReplay(unittest.TestCase):
         self.assertEqual(list(event), EVENT_COLUMNS)
         self.assertEqual(event["attack_type"], "replay")
         self.assertEqual(event["station"], "CA_Fallbrook_5_NE")
-        self.assertEqual(event["start"], packets[start]["ts"])
-        self.assertEqual(event["end"], packets[end]["ts"])
+        self.assertEqual(
+            event["start"],
+            pd.Timestamp(packets[start]["ts"]).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        self.assertEqual(
+            event["end"],
+            pd.Timestamp(packets[end]["ts"]).strftime("%Y-%m-%d %H:%M:%S"),
+        )
         self.assertEqual(
             event["target_columns"], "SOIL_MOISTURE_5"
         )
@@ -501,6 +507,33 @@ class TestReplay(unittest.TestCase):
 
         self.assertEqual(event_params["replayed_packets_sha256"], expected)
         self.assertNotEqual(expected, hashlib.sha256(signatures_only).hexdigest())
+
+    def test_replay_event_passes_events_validator(self):
+        _, _, event = attack_packet(make_signed_packets(), fixed_replay_params())
+        selected_ts = json.loads(event["params_json"])["selected_window_ts"]
+        self.assertEqual(
+            event["start"],
+            pd.Timestamp(selected_ts[0]).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        self.assertEqual(
+            event["end"],
+            pd.Timestamp(selected_ts[-1]).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        self.assertRegex(event["start"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        with tempfile.NamedTemporaryFile(suffix=".csv", dir=Path(__file__).parent, delete=False) as temporary:
+            events_path = Path(temporary.name)
+        try:
+            pd.DataFrame([event], columns=EVENT_COLUMNS).to_csv(events_path, index=False)
+            result = subprocess.run(
+                [sys.executable, "validate.py", "events", str(events_path)],
+                cwd=Path(__file__).parent,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            events_path.unlink(missing_ok=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_window_requires_exact_one_hour_timestamp_spacing(self):
         packets = make_signed_packets(count=24, gap_at=12)

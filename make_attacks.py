@@ -115,6 +115,11 @@ def validate_config(config):
         seed = run.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError(f"runs[{position}].seed must be an integer")
+        year = run.get("year")
+        if isinstance(year, bool) or not isinstance(year, int) or year not in profiles[profile_name]["years"]:
+            raise ValueError(
+                f"runs[{position}].year must be one of profiles.{profile_name}.years"
+            )
     return config
 
 
@@ -149,6 +154,7 @@ def _run_params(profile, run):
             "attack_type": "bias",
             "station": run["station"],
             "seed": run["seed"],
+            "years": [run["year"]],
             "run_config_id": run["id"],
         }
     )
@@ -198,20 +204,21 @@ def _diagnostics(clean_data, params):
     }
 
 
-def _write_run(clean_data, config, run, profile):
+def _generate_run(clean_data, run, profile):
     params = _run_params(profile, run)
     try:
         attacked, labels, event = attack_data(clean_data, params)
     except ValueError as exc:
-        return {
+        return ({
             "id": run["id"],
             "station": run["station"],
+            "year": run["year"],
             "profile": run["profile"],
             "status": "not_applied",
             "reason": str(exc),
             "diagnostics": _diagnostics(clean_data, params),
             "changed_rows": 0,
-        }
+        }, None, None, None)
 
     changed_rows = int(labels["is_attacked"].sum())
     event_params = json.loads(event["params_json"])
@@ -221,29 +228,17 @@ def _write_run(clean_data, config, run, profile):
         else event_params["selected_spike_count"]
     )
     partial = changed_rows != expected_rows
-    output_dir = _project_path(config["output_dir"], "output_dir")
-    stem = f"{params['mode']}_provisional_v2_{run['station']}_{run['id']}"
-    observation_path = output_dir / f"{stem}.csv"
-    event_path = output_dir / f"{stem}_events.csv"
-    if observation_path.exists() or event_path.exists():
-        raise FileExistsError(
-            f"refusing to overwrite existing run output {observation_path} or {event_path}"
-        )
-    output_dir.mkdir(parents=True, exist_ok=True)
-    combined = pd.concat([attacked, labels], axis=1)
-    combined.to_csv(observation_path, index=False)
-    pd.DataFrame([event], columns=EVENT_COLUMNS).to_csv(event_path, index=False)
-    return {
+    report = {
         "id": run["id"],
         "station": run["station"],
+        "year": run["year"],
         "profile": run["profile"],
         "status": "partial" if partial else "applied",
         "changed_rows": changed_rows,
         "expected_changed_rows": int(expected_rows),
-        "observation_file": str(observation_path.relative_to(PROJECT_ROOT)) if observation_path.is_relative_to(PROJECT_ROOT) else str(observation_path),
-        "event_file": str(event_path.relative_to(PROJECT_ROOT)) if event_path.is_relative_to(PROJECT_ROOT) else str(event_path),
         "attack_run_id": event["attack_run_id"],
     }
+    return report, attacked, labels, event
 
 
 def run_config(config, clean_data=None):
@@ -260,10 +255,83 @@ def run_config(config, clean_data=None):
         }
     if clean_data is None:
         clean_data = _read_clean(_project_path(config["input_data"], "input_data"))
+    if "annee" not in clean_data.columns:
+        raise ValueError("input data must include the interval-start year column 'annee'")
+    # A fresh index lets us copy individual changed cells back without relying
+    # on the caller's index being unique. The caller's DataFrame is untouched.
+    source = clean_data.reset_index(drop=True).copy(deep=True)
     results = []
+    groups = {}
+    event_rows = []
     for run in config["runs"]:
-        profile = config["profiles"][run["profile"]]
-        results.append(_write_run(clean_data, config, run, profile))
+        key = (run["station"], run["year"])
+        if key not in groups:
+            base = source.loc[
+                source["station"].eq(run["station"]) & source["annee"].eq(run["year"])
+            ].copy()
+            groups[key] = {
+                "base": base,
+                "attacked": base.copy(deep=True),
+                "labels": pd.DataFrame(
+                    {
+                        "is_attacked": pd.Series(False, index=base.index, dtype=bool),
+                        "attack_type": pd.Series("", index=base.index, dtype="string"),
+                        "attack_run_id": pd.Series("", index=base.index, dtype="string"),
+                    },
+                    index=base.index,
+                    columns=LABEL_COLUMNS,
+                ),
+                "reserved": set(),
+                "events": [],
+            }
+        group = groups[key]
+        available = group["base"].drop(index=list(group["reserved"]))
+        report, attacked, labels, event = _generate_run(
+            available, run, config["profiles"][run["profile"]]
+        )
+        if report["status"] == "partial":
+            report["reason"] = "engine changed fewer readings than the selected attack parameters require"
+        if report["status"] != "applied":
+            results.append(report)
+            continue
+        event_params = json.loads(event["params_json"])
+        reserve_start = event_params.get("selected_window_start", event["start"])
+        reserve_end = event_params.get("selected_window_end", event["end"])
+        times = pd.to_datetime(group["base"]["time"], errors="coerce", utc=True)
+        reserved_now = set(group["base"].index[
+            times.between(pd.Timestamp(reserve_start, tz="UTC"), pd.Timestamp(reserve_end, tz="UTC"))
+        ])
+        changed_index = labels.index[labels["is_attacked"].astype(bool)]
+        if not set(changed_index).issubset(reserved_now):
+            raise RuntimeError("engine changed a reading outside its reported attack window")
+        group["reserved"].update(reserved_now)
+        group["attacked"].loc[changed_index, TARGET_COLUMN] = attacked.loc[changed_index, TARGET_COLUMN]
+        group["labels"].loc[changed_index, "is_attacked"] = True
+        group["labels"].loc[changed_index, "attack_type"] = str(event["attack_type"])
+        group["labels"].loc[changed_index, "attack_run_id"] = str(event["attack_run_id"])
+        group["events"].append(event)
+        event_rows.append(event)
+        results.append(report)
+
+    output_dir = _project_path(config["output_dir"], "output_dir")
+    applied_groups = [(key, group) for key, group in sorted(groups.items()) if group["events"]]
+    output_paths = [output_dir / f"{station}_{year}.csv" for (station, year), _ in applied_groups]
+    if event_rows:
+        output_paths.append(output_dir / "attack_events.csv")
+    # Check the whole batch before creating any file. Exclusive create also
+    # protects a destination that appears between this check and writing.
+    existing = [path for path in output_paths if path.exists()]
+    if existing:
+        raise FileExistsError(f"refusing to overwrite existing output: {existing[0]}")
+    if output_paths:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    for (station, year), group in applied_groups:
+        output_path = output_dir / f"{station}_{year}.csv"
+        with output_path.open("x", encoding="utf-8", newline="") as handle:
+            pd.concat([group["attacked"], group["labels"]], axis=1).to_csv(handle, index=False)
+    if event_rows:
+        with (output_dir / "attack_events.csv").open("x", encoding="utf-8", newline="") as handle:
+            pd.DataFrame(event_rows, columns=EVENT_COLUMNS).to_csv(handle, index=False)
 
     station_report = {}
     for station in sorted({result["station"] for result in results}):
@@ -281,6 +349,10 @@ def run_config(config, clean_data=None):
         "applied_runs": sum(result["status"] == "applied" for result in results),
         "not_applied_runs": sum(result["status"] == "not_applied" for result in results),
         "partial_runs": sum(result["status"] == "partial" for result in results),
+        "output_files": [
+            str(path.relative_to(PROJECT_ROOT)) if path.is_relative_to(PROJECT_ROOT) else str(path)
+            for path in output_paths
+        ],
         "stations": station_report,
     }
 

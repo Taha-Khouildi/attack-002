@@ -1,6 +1,6 @@
 {
   "config_version": 1,
-  "description": "Provisional v2 attack profile placeholders; no run allocation is approved yet.",
+  "description": "Configured Bias attack profiles for the 2024 and 2025 observation years.",
   "target_column": "SOIL_MOISTURE_5",
   "input_data": "data/processed/uscrn_clean.parquet",
   "output_dir": "data/attacked/provisional_v2",
@@ -8,7 +8,7 @@
     "bias": {
       "enabled": true,
       "mode": "constant_offset",
-      "years": [2024],
+      "years": [2024, 2025],
       "duration_hours_range": [6, 72],
       "offset_range": [0.02, 0.08],
       "description": "Positive-only provisional offset and inclusive hourly-reading duration ranges."
@@ -16,7 +16,7 @@
     "spike": {
       "enabled": false,
       "mode": "spike",
-      "years": [2024],
+      "years": [2024, 2025],
       "spike_magnitude_range": [0.03, 0.10],
       "description": "Deferred: the engine has no duration or spike-count defaults; specify both before enabling."
     }

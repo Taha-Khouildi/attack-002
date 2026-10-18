@@ -13,7 +13,7 @@ Sensor data integrity matters because downstream decisions may rely on the measu
 
 The intended objectives in the [data contract](../data_contract.md) are to prepare reproducible clean and attacked observations, check packet authenticity and replay conditions with a cryptographic gate, apply an AI anomaly detector to packets that pass the gate, and evaluate both stages using separate ground-truth labels.
 
-**Verified milestone:** the repository contains a clean Parquet dataset, a DataFrame attack function for two Bias modes, two 2024 demonstration CSVs, event records, two SVG plots, unit tests, and a contract validator. The sensor emulator, packet gate, AI detector, and end-to-end evaluation are not present in this repository snapshot.
+**Verified milestone:** the repository contains a clean Parquet dataset, two Bias modes, Replay and six Tamper modes, two 2024 Bias demonstration CSVs, signed packet fixtures, unit tests, a configuration runner, and a contract validator. The sensor emulator, Salma's Stage-1 gate, AI detector, and end-to-end evaluation are not present in this repository snapshot. The provisional v2 runner configuration has no scheduled runs, so it has produced no batch.
 
 ## 2. System architecture
 
@@ -43,11 +43,12 @@ flowchart LR
 | Clean USCRN Parquet input | Present at data/processed/uscrn_clean.parquet; passes the validator. |
 | Pre-sign-style Bias transformation | Implemented for constant-offset and Spike modes. It transforms a DataFrame; no signing emulator is present. |
 | Ground-truth labels and event metadata | Returned separately by the engine and included in the two standard demonstration artifacts. |
-| Sensor emulator and Ed25519 signing | Described in the contract; no emulator or generated packet file is present. |
-| Post-sign Replay and Tamper | Described in the contract; not implemented. |
+| Sensor emulator and Ed25519 signing | No emulator is present. The repository has a five-packet signed fixture and a public-key registry. |
+| Post-sign Replay and Tamper | Implemented in `attack_engine.py`, with packet fixtures and validator-backed tests. |
 | Stage 1 cryptographic gate | Intended checks are documented; no gate implementation is present. |
 | Stage 2 AI detector | Intended by the contract; no model, detector output, or result is present. |
-| Evaluation harness | Described by the contract; not implemented or run. |
+| Configuration runner | `make_attacks.py` can write one CSV per station and interval-start year plus one combined event ledger. Its current configuration has no runs; no provisional v2 batch has been generated. |
+| Evaluation harness | An end-to-end scoring harness is not present. |
 
 The Bias CSVs are labeled evaluation artifacts. No sensor emulator or detector consumed them during the verified demonstrations.
 
@@ -59,8 +60,8 @@ The inspected work scope, without identifying an individual author:
 | :--- | :--- | :--- |
 | Constant-offset Bias | **Implemented and demonstrated** | A 2024 Fallbrook CSV and plot; unit tests cover reproducibility and constraints. |
 | Spike Bias | **Implemented and demonstrated** | A 2024 Fallbrook CSV and plot; unit tests cover spike count, spacing, bounds, labels, and metadata. The attack code remains bias; mode is spike. |
-| Replay | **Pending** | No packet replay code or signed-packet integration test exists. |
-| Tamper | **Pending** | No post-sign packet modification code or gate integration test exists. |
+| Replay | **Implemented** | The engine replays contiguous hourly signed packets and emits contract-format event metadata. |
+| Tamper | **Implemented** | The engine supports payload, signed-header, signature, station, and field tampering modes. |
 
 Drift, Mimicry, and held-out variants are also not implemented in the current engine.
 
@@ -118,24 +119,35 @@ There is also a split-status mismatch: the Markdown contract says the evaluation
 
 ## 5. Project structure
 
-The following reflects the inspected tree; docs/ is being added by this task. No README was present.
+The following shows the main project files relevant to this work.
 
 ~~~text
 TSYP14/
 ├── attack_engine.py
+├── make_attacks.py
+├── requirements.txt
+├── README.md
 ├── data_contract.md
 ├── data_contract.schema.json
 ├── validate.py
 ├── test_attack_engine.py
+├── test_make_attacks.py
+├── config/
+│   └── provisional_v2.json
+├── keys/
+│   └── pubkeys.json
 ├── data/
 │   ├── processed/
 │   │   └── uscrn_clean.parquet
+│   ├── packets/
+│   │   └── replay_test_valid.jsonl
 │   └── attacked/
 │       ├── attack_events.csv
 │       ├── bias_run01.csv
 │       ├── bias_run01_clean_vs_attacked.svg
 │       ├── spike_run01.csv
-│       └── spike_run01_clean_vs_attacked.svg
+│       ├── spike_run01_clean_vs_attacked.svg
+│       └── packets/ (local Replay and Tamper examples)
 └── docs/
     ├── BEGINNER_GUIDE.md
     └── COMPLETE_PROJECT_DOCUMENTATION.md
@@ -143,8 +155,11 @@ TSYP14/
 
 | File or folder | Purpose |
 | :--- | :--- |
-| attack_engine.py | Shared DataFrame interface for constant-offset and Spike Bias. |
-| test_attack_engine.py | Ten unittest cases for both Bias modes and edge conditions. |
+| attack_engine.py | Shared DataFrame interface for Bias/Spike and packet interface for Replay/Tamper. |
+| make_attacks.py | Configuration runner; groups non-overlapping configured events by station and interval-start year. |
+| config/provisional_v2.json | 2024/2025 profile settings; its run list is empty. |
+| requirements.txt | Pinned direct Python dependencies. |
+| test_attack_engine.py and test_make_attacks.py | Unit and validator integration tests for engine and runner behavior. |
 | validate.py | Validates observation, attacked, event, or packet files against the JSON schema. |
 | data_contract.md | Human-readable data flow, security design, schema rules, and evaluation plan. |
 | data_contract.schema.json | Machine-readable columns, field rules, station registry, labels, packet format, and split periods. |
@@ -152,9 +167,11 @@ TSYP14/
 | data/attacked/*_run01.csv | Labeled local demonstration observations. |
 | data/attacked/attack_events.csv | One event row per standard Bias demonstration. |
 | data/attacked/*_clean_vs_attacked.svg | Standalone vector plots; no plot-generation script is present. |
+| data/packets/replay_test_valid.jsonl and keys/pubkeys.json | Five signed example packets and the public registry used to verify them. |
+| data/attacked/packets/ | Local Replay and Tamper packet examples with separate label sidecars. |
 | docs/ | Technical documentation and beginner guide. |
 
-The contract also describes packet, key-registry, and detector-output locations, but those files/folders are not present in the inspected tree.
+The detector-output location described by the contract is not populated here.
 
 ## 6. Attack-engine implementation
 
@@ -333,7 +350,7 @@ Abbreviated example from the current Spike event:
 
 ### Unit-test cases
 
-test_attack_engine.py uses Python unittest with small in-memory DataFrames. It has ten cases:
+`test_attack_engine.py` covers Bias, Spike, Replay, and Tamper. `test_make_attacks.py` covers the station-year runner. The current suite has 44 tests. Selected cases are:
 
 | Test | Coverage |
 | :--- | :--- |
@@ -347,16 +364,20 @@ test_attack_engine.py uses Python unittest with small in-memory DataFrames. It h
 | test_spike_count_spacing_bounds_labels_and_event | Spike count/spacing, missing values, labels, rounding/bounds, untouched columns, metadata. |
 | test_spike_seed_is_reproducible | Same seed gives same Spike outputs and event. |
 | test_spike_count_must_fit_spacing_and_duration | Infeasible count/duration raises a clear error. |
+| test_replay_event_passes_events_validator | Exact event timestamp strings and `validate.py events` exit code 0. |
+| test_multiple_events_share_one_station_year_file_without_overlap | Two runs share one labeled CSV and one combined event ledger. |
+| test_spike_reserves_full_window_including_unchanged_hours | A later run cannot enter a selected Spike window between spikes. |
+| test_representative_station_year_and_event_outputs_validate | Temporary 2024 station-year and combined event files pass the validator. |
 
 ### Test command and actual result
 
 From the repository root in PowerShell:
 
 ~~~powershell
-& 'C:/Users/USER/tsyp14-venv/Scripts/python.exe' -B -c "import unittest; suite=unittest.defaultTestLoader.discover('.'); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())"
+& 'C:/Users/USER/tsyp14-venv/Scripts/python.exe' -B -m unittest discover -v
 ~~~
 
-During this documentation review, **10 tests ran in 0.071 seconds and all passed (OK)**.
+At the latest runner update, **44 tests ran in 10.369 seconds and all passed (OK)**.
 
 ### Validator usage and actual results
 
@@ -380,7 +401,7 @@ All four reported VALID against contract v1.0.0 during this review.
 | Constant-offset Bias | 504 | 24 | +0.005 hourly from 2024-07-04 19:00 through 2024-07-05 18:00. |
 | Spike Bias | 504 | 4 | +0.003, +0.003, +0.004, and −0.004 at the timestamps listed in §8. |
 
-Both use 2024 Fallbrook data. Both passed validation. The ten unit tests passed. The Parquet digest remained 46b98115424bb03af28d31bcb96b68fedd537a609bf97d4199a653a376b98421.
+Both use 2024 Fallbrook data and passed validation when generated. The Parquet digest remained 46b98115424bb03af28d31bcb96b68fedd537a609bf97d4199a653a376b98421. The current unit suite also covers Replay, Tamper, and the station-year runner; its latest result should be taken from a fresh test run.
 
 These results show that the current engine produced the stated changes reproducibly, returned separate labels, preserved the input, and created CSVs accepted by the current validator. They do **not** show an AI detection rate, gate result, signature, performance measurement, or generalization to 2025.
 
@@ -396,8 +417,8 @@ Ed25519 is a public-key signature scheme: a private key creates a signature and 
 
 | Attack | Intended behavior | Relevant contract codes | Status |
 | :--- | :--- | :--- | :--- |
-| Replay | Resend an authentic old packet or present it as current. | E_REPLAY_SEQ, E_REPLAY_NONCE, E_STALE | **Not implemented.** |
-| Tamper | Change payload/header after signing without a valid new signature. | E_PAYLOAD_HASH, E_BAD_SIG | **Not implemented.** |
+| Replay | Resend an authentic old packet or present it as current. | E_REPLAY_SEQ, E_REPLAY_NONCE, E_STALE | **Implemented in the attack engine; gate integration remains outside this repository.** |
+| Tamper | Change payload/header after signing without a valid new signature. | E_PAYLOAD_HASH, E_BAD_SIG | **Implemented in the attack engine; gate integration remains outside this repository.** |
 
 Other contract gate codes include E_SCHEMA, E_UNKNOWN_KEY, W_SEQ_GAP, and OK. The ordered checks are in contract §8. No Stage 1 or Stage 2 integration test has passed; those components are absent.
 
@@ -408,7 +429,7 @@ Other contract gate codes include E_SCHEMA, E_UNKNOWN_KEY, W_SEQ_GAP, and OK. Th
 3. **Magnitude selection:** callers pass explicit ranges; there is no agreed final statistical rule.
 4. **Interface compatibility:** attack_data(clean_data, params) is the working interface, but compatibility with an external AI pipeline has not been tested.
 5. **Missing-data windows:** Spike does not modify nulls, but its selected duration envelope can include them. Contract §7.4 says evaluation windows skip gaps.
-6. **No system integration:** no signing emulator, packet gate, Replay/Tamper, detector, or evaluation harness is present.
+6. **No end-to-end integration:** Replay and Tamper generation and validator checks exist, but the signing emulator, Salma's Stage-1 gate, detector, and evaluation scoring harness are not present here.
 7. **Data provenance:** contract-described raw inputs, cleaner, and quality report are absent, limiting independent reproduction of the clean dataset.
 8. **Validator scope:** a valid result is not proof that labels align with every changed cell or that an attack is detected.
 9. **Held-out status:** no held-out artifact or commitment is present. Repository files cannot establish whether external AI tuning has started; no pre-tuning commitment is claimed.
@@ -419,7 +440,7 @@ Other contract gate codes include E_SCHEMA, E_UNKNOWN_KEY, W_SEQ_GAP, and OK. Th
 1. Reconcile the hard-bound and split-status documents with the contract owner.
 2. Agree and document the station-derived magnitude policy.
 3. Confirm tuning status and privacy controls before preparing held-out material; keep it within the 2025 test period and secret as required.
-4. Implement Replay and Tamper with dummy signed packets and test hashes, signatures, sequence, nonce, and freshness behavior.
+4. Integrate the existing Replay and Tamper examples with Salma's Stage-1 gate and test ordered rejection codes, sequence, nonce, and freshness behavior.
 5. Integrate attacks with the sensor emulator and Stage 1; ensure labels are stripped before signing and detector input.
 6. Integrate Stage 2 and the evaluation harness, then report test results separately from validation results.
 7. Prepare final reporting and presentation using verified metrics and explicit limitations.
@@ -428,11 +449,11 @@ Other contract gate codes include E_SCHEMA, E_UNKNOWN_KEY, W_SEQ_GAP, and OK. Th
 
 ### Environment observed
 
-Verification used Python **3.13.2**, Pandas **3.0.6**, and PyArrow **26.0.0**. Pandas is used by the engine, tests, and validator. PyArrow is required to read Parquet. The tests otherwise use the Python standard library. SVG files are standalone and required no plotting package. validate.py imports cryptography only for packet signature verification when --pubkeys is supplied; no packet signature verification was run.
+Verification used Python **3.13.2**, Pandas **3.0.6**, PyArrow **26.0.0**, and cryptography **50.0.2**. Pandas is used by the engine, runner, tests, and validator. PyArrow reads Parquet. Cryptography verifies packet signatures with the public-key registry. SVG files are standalone and require no plotting package. `validate.py packets --pubkeys` has verified the restored signed fixture; this is separate from Salma's Stage-1 gate.
 
 Run the test command and four validator commands in §10 from the repository root. For validator, the first argument selects observations, attacked, or events; the second is the file. Exit codes are 0 for valid, 1 for contract violations, and 2 for usage errors.
 
-Open attack_events.csv in a spreadsheet or text editor to inspect event parameters. Open an SVG in a browser or vector-image viewer. For a new run, call attack_data(clean_data, params) and explicitly assemble/save outputs; the engine itself does not write files. Keep labels out of emulator and detector inputs and join them only for evaluation.
+Open attack_events.csv in a spreadsheet or text editor to inspect event parameters. Open an SVG in a browser or vector-image viewer. For a configured batch, add explicit station, year, seed, and profile entries under `runs` in `config/provisional_v2.json`, then run `python make_attacks.py --config config/provisional_v2.json`. The runner writes to `data/attacked/provisional_v2/` only when runs are configured; the engine itself does not write files. Keep labels out of emulator and detector inputs and join them only for evaluation. The five signed example packets have generation-time `ts` values one second apart and cannot demonstrate an hourly observation stream; a valid hourly replacement needs new signatures from the packet owner.
 
 Recompute the clean-file digest in PowerShell:
 

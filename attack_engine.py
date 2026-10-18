@@ -530,8 +530,12 @@ def attack_packet(signed_packets, params):
         "station": station,
         "attack_type": "replay",
         "target_columns": target_columns,
-        "start": selected_packets[0]["ts"],
-        "end": selected_packets[-1]["ts"],
+        "start": datetime.strptime(
+            selected_packets[0]["ts"], "%Y-%m-%dT%H:%M:%SZ"
+        ).strftime("%Y-%m-%d %H:%M:%S"),
+        "end": datetime.strptime(
+            selected_packets[-1]["ts"], "%Y-%m-%dT%H:%M:%SZ"
+        ).strftime("%Y-%m-%d %H:%M:%S"),
         "params_json": _canonical_packet_bytes(event_params).decode("utf-8"),
         "seed": seed,
         "engine_version": ENGINE_VERSION,
