@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # TSYP14 attack engine
 
 This repository contains a deterministic attack engine for USCRN soil-moisture
